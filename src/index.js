@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { Telegraf } from "telegraf";
-import OpenAI from "openai";
+import OpenAI, { toFile } from "openai";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const apiKey = process.env.OPENAI_API_KEY;
@@ -19,56 +19,76 @@ if (!apiKey) {
 const bot = new Telegraf(token);
 const openai = new OpenAI({ apiKey });
 
-const HELP_TEXT = [
-  "Send me a description and I'll generate an image.",
+const INSTRUCTIONS = [
+  "Send me a photo of someone and I'll change their clothes to a different outfit.",
   "",
-  "Commands:",
-  "/start — welcome message",
-  "/help — show this help",
-  "/imagine <prompt> — generate from a prompt",
+  "How to use:",
+  "1. Send a clear photo of a person",
+  "2. Wait a few seconds",
+  "3. I'll reply with the same person in new clothes",
   "",
-  "Or just send any text message as your prompt.",
+  "Optional: add a caption to describe the outfit you want.",
+  "Example caption: red leather jacket and black jeans",
 ].join("\n");
 
-bot.start((ctx) =>
-  ctx.reply(
-    "Hi! I'm an image generation bot.\n\nDescribe what you want to see, or use /imagine <prompt>."
-  )
-);
+const OUTFIT_IDEAS = [
+  "a casual streetwear look with a hoodie and sneakers",
+  "a sharp formal suit and dress shoes",
+  "a colorful summer outfit with a light shirt and shorts",
+  "a stylish denim jacket over a plain tee",
+  "an elegant evening dress or tailored evening wear",
+  "a cozy knit sweater and chinos",
+  "a sporty athletic tracksuit",
+  "a vintage 90s inspired outfit",
+  "a smart-casual blazer with dark jeans",
+  "a light raincoat and boots",
+];
 
-bot.help((ctx) => ctx.reply(HELP_TEXT));
-
-bot.command("imagine", async (ctx) => {
-  const prompt = ctx.message.text.replace(/^\/imagine(@\w+)?\s*/i, "").trim();
-  if (!prompt) {
-    await ctx.reply("Usage: /imagine a cat astronaut floating in space");
-    return;
-  }
-  await generateAndSend(ctx, prompt);
-});
+bot.start((ctx) => ctx.reply(INSTRUCTIONS));
+bot.help((ctx) => ctx.reply(INSTRUCTIONS));
 
 bot.on("text", async (ctx) => {
-  const prompt = ctx.message.text.trim();
-  if (!prompt || prompt.startsWith("/")) return;
-  await generateAndSend(ctx, prompt);
+  if (ctx.message.text.startsWith("/")) return;
+  await ctx.reply(INSTRUCTIONS);
 });
 
-async function generateAndSend(ctx, prompt) {
-  const status = await ctx.reply("Generating image… this can take a few seconds.");
+bot.on("photo", async (ctx) => {
+  const photos = ctx.message.photo;
+  const largest = photos[photos.length - 1];
+  const caption = ctx.message.caption?.trim() || "";
+  await changeClothesAndSend(ctx, largest.file_id, caption);
+});
+
+bot.on("document", async (ctx) => {
+  const doc = ctx.message.document;
+  if (!doc.mime_type?.startsWith("image/")) {
+    await ctx.reply(INSTRUCTIONS);
+    return;
+  }
+  const caption = ctx.message.caption?.trim() || "";
+  await changeClothesAndSend(ctx, doc.file_id, caption);
+});
+
+async function changeClothesAndSend(ctx, fileId, caption) {
+  const status = await ctx.reply("Changing the outfit… this can take a few seconds.");
 
   try {
-    const image = await createImage(prompt);
+    const input = await downloadTelegramFile(ctx, fileId);
+    const outfit =
+      caption || OUTFIT_IDEAS[Math.floor(Math.random() * OUTFIT_IDEAS.length)];
+    const result = await editClothes(input, outfit);
+
     await ctx.replyWithPhoto(
-      { source: image },
-      { caption: prompt.length > 900 ? `${prompt.slice(0, 897)}…` : prompt }
+      { source: result },
+      { caption: caption ? `Outfit: ${caption}` : "Here's a new outfit." }
     );
   } catch (err) {
-    console.error("Image generation failed:", err);
+    console.error("Outfit change failed:", err);
     const message =
       err?.error?.message ||
       err?.message ||
-      "Something went wrong while generating the image.";
-    await ctx.reply(`Couldn't generate that image.\n\n${message}`);
+      "Something went wrong while editing the image.";
+    await ctx.reply(`Couldn't change the clothes.\n\n${message}`);
   } finally {
     try {
       await ctx.deleteMessage(status.message_id);
@@ -78,15 +98,42 @@ async function generateAndSend(ctx, prompt) {
   }
 }
 
-async function createImage(prompt) {
-  const response = await openai.images.generate({
+async function downloadTelegramFile(ctx, fileId) {
+  const link = await ctx.telegram.getFileLink(fileId);
+  const res = await fetch(link.href);
+  if (!res.ok) {
+    throw new Error(`Failed to download photo from Telegram (${res.status}).`);
+  }
+
+  const contentType = res.headers.get("content-type") || "image/jpeg";
+  const buffer = Buffer.from(await res.arrayBuffer());
+  const ext = contentType.includes("png")
+    ? "png"
+    : contentType.includes("webp")
+      ? "webp"
+      : "jpg";
+
+  return { buffer, contentType, filename: `input.${ext}` };
+}
+
+async function editClothes(input, outfit) {
+  const prompt = [
+    "Edit this photo: change only the person's clothing to a completely different outfit.",
+    `New outfit: ${outfit}.`,
+    "Keep the same person, face, body, pose, background, lighting, and framing.",
+    "Do not change identity, age, or appearance — only the clothes.",
+  ].join(" ");
+
+  const file = await toFile(input.buffer, input.filename, {
+    type: input.contentType,
+  });
+
+  const response = await openai.images.edit({
     model: imageModel,
+    image: file,
     prompt,
     n: 1,
-    size: imageModel === "dall-e-2" ? "1024x1024" : "1024x1024",
-    ...(imageModel.startsWith("dall-e")
-      ? { response_format: "b64_json" }
-      : {}),
+    size: "1024x1024",
   });
 
   const item = response.data?.[0];
@@ -101,7 +148,7 @@ async function createImage(prompt) {
   if (item.url) {
     const res = await fetch(item.url);
     if (!res.ok) {
-      throw new Error(`Failed to download image (${res.status}).`);
+      throw new Error(`Failed to download edited image (${res.status}).`);
     }
     return Buffer.from(await res.arrayBuffer());
   }
@@ -114,7 +161,7 @@ bot.catch((err, ctx) => {
 });
 
 bot.launch().then(() => {
-  console.log(`Bot is running (model: ${imageModel}). Press Ctrl+C to stop.`);
+  console.log(`Outfit bot running (model: ${imageModel}). Press Ctrl+C to stop.`);
 });
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
