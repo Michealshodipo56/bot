@@ -1,7 +1,7 @@
 {
   "name": "telegram-image-bot",
   "version": "1.0.0",
-  "description": "Telegram bot that generates images from text prompts",
+  "description": "Telegram bot that changes outfits in photos",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
