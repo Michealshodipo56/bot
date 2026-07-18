@@ -1,10 +1,10 @@
 import "dotenv/config";
 import { Telegraf } from "telegraf";
-import OpenAI, { toFile } from "openai";
+import { GoogleGenAI } from "@google/genai";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
-const apiKey = process.env.OPENAI_API_KEY;
-const imageModel = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
+const apiKey = process.env.GEMINI_API_KEY;
+const imageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-2.5-flash-image";
 
 if (!token) {
   console.error("Missing TELEGRAM_BOT_TOKEN. Copy .env.example to .env and fill it in.");
@@ -12,12 +12,12 @@ if (!token) {
 }
 
 if (!apiKey) {
-  console.error("Missing OPENAI_API_KEY. Copy .env.example to .env and fill it in.");
+  console.error("Missing GEMINI_API_KEY. Copy .env.example to .env and fill it in.");
   process.exit(1);
 }
 
 const bot = new Telegraf(token);
-const openai = new OpenAI({ apiKey });
+const ai = new GoogleGenAI({ apiKey });
 
 const INSTRUCTIONS = [
   "Send me a photo of someone and I'll change their clothes to a different outfit.",
@@ -107,13 +107,8 @@ async function downloadTelegramFile(ctx, fileId) {
 
   const contentType = res.headers.get("content-type") || "image/jpeg";
   const buffer = Buffer.from(await res.arrayBuffer());
-  const ext = contentType.includes("png")
-    ? "png"
-    : contentType.includes("webp")
-      ? "webp"
-      : "jpg";
 
-  return { buffer, contentType, filename: `input.${ext}` };
+  return { buffer, contentType };
 }
 
 async function editClothes(input, outfit) {
@@ -124,36 +119,38 @@ async function editClothes(input, outfit) {
     "Do not change identity, age, or appearance — only the clothes.",
   ].join(" ");
 
-  const file = await toFile(input.buffer, input.filename, {
-    type: input.contentType,
-  });
-
-  const response = await openai.images.edit({
+  const response = await ai.models.generateContent({
     model: imageModel,
-    image: file,
-    prompt,
-    n: 1,
-    size: "1024x1024",
+    contents: [
+      {
+        inlineData: {
+          mimeType: input.contentType,
+          data: input.buffer.toString("base64"),
+        },
+      },
+      { text: prompt },
+    ],
+    config: {
+      responseModalities: ["TEXT", "IMAGE"],
+    },
   });
 
-  const item = response.data?.[0];
-  if (!item) {
-    throw new Error("No image returned from the API.");
-  }
-
-  if (item.b64_json) {
-    return Buffer.from(item.b64_json, "base64");
-  }
-
-  if (item.url) {
-    const res = await fetch(item.url);
-    if (!res.ok) {
-      throw new Error(`Failed to download edited image (${res.status}).`);
+  const parts = response.candidates?.[0]?.content?.parts || [];
+  for (const part of parts) {
+    if (part.inlineData?.data) {
+      return Buffer.from(part.inlineData.data, "base64");
     }
-    return Buffer.from(await res.arrayBuffer());
   }
 
-  throw new Error("Image response had neither b64_json nor url.");
+  const text = parts
+    .map((part) => part.text)
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+
+  throw new Error(
+    text || "Gemini did not return an edited image. Try another photo."
+  );
 }
 
 bot.catch((err, ctx) => {
