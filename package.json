@@ -1,7 +1,7 @@
 {
   "name": "telegram-image-bot",
   "version": "1.0.0",
-  "description": "Telegram bot that changes outfits in photos using Gemini",
+  "description": "Telegram bot that changes outfits in photos via OpenRouter",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
@@ -12,8 +12,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@google/genai": "^1.52.0",
-    "dotenv": "^16.6.1",
+    "dotenv": "^16.4.7",
     "telegraf": "^4.16.3"
   }
 }
